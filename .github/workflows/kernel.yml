@@ -60,9 +60,12 @@ jobs:
           cp muyu-overlay/arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts \
             kernel-src/arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts
           # 复制 sheng 的 config 作为基础
-          cp kernel-src/arch/arm64/configs/sm8550_defconfig 2>/dev/null || \
+          cp kernel-src/arch/arm64/configs/sm8550_defconfig kernel-src/.config 2>/dev/null || \
              cp kernel-src/sm8550.config kernel-src/.config 2>/dev/null || true
-          ls -la kernel-src/.config kernel-src/arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts
+          echo "dts 已复制:"
+          ls -la kernel-src/arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts || true
+          echo ".config 状态:"
+          ls -la kernel-src/.config 2>/dev/null || echo "  (.config 不存在，下一步会生成)"
 
       - name: Configure kernel
         working-directory: kernel-src

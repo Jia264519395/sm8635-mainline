@@ -1,0 +1,167 @@
+name: Build Kernel & Release
+
+on:
+  push:
+    branches: [ main, muyu-* ]
+    paths:
+      - 'arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts'
+      - 'sm8635.config'
+      - '.github/workflows/kernel.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（如 7.2.6）'
+        required: true
+        default: '7.2.6'
+      singleboot:
+        description: '是否同时构建 singleboot 镜像'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-kernel:
+    name: Build Kernel Image & DTB
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    outputs:
+      kernel_version: ${{ steps.ver.outputs.kernel_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential bc flex bison libssl-dev libncurses-dev \
+            gcc-aarch64-linux-gnu clang llvm \
+            python3 dwarves git curl zip
+
+      - name: Check for sm8635.config or fallback
+        run: |
+          if [[ ! -f sm8635.config ]]; then
+            echo "::warning::sm8635.config 不存在，使用 sheng 的 sm8550.config 作为基础"
+            # 从 sheng 仓库拉取 config 作为基础
+            curl -sL https://raw.githubusercontent.com/ianchb/sm8550-mainline/sheng-7.2.6/sm8550.config -o sm8635.config || true
+          fi
+          ls -la sm8635.config
+
+      - name: Configure kernel
+        run: |
+          cp sm8635.config .config
+          make ARCH=arm64 olddefconfig
+          # 确认 muyu dts 被选中
+          scripts/config --enable CONFIG_ARCH_QCOM
+          scripts/config --enable CONFIG_ARCH_MSM8998
+          scripts/config --set-str CONFIG_BUILD_SALT "muyu"
+          make ARCH=arm64 olddefconfig
+
+      - name: Build Image
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image dtbs 2>&1 | tee build.log
+          # 检查产物
+          ls -l arch/arm64/boot/Image
+          ls -l arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dtb || echo "::warning::muyu dtb 未生成"
+
+      - name: Extract kernel version
+        id: ver
+        run: |
+          KVER=$(make ARCH=arm64 -s kernelrelease 2>/dev/null || echo "unknown")
+          echo "kernel_version=$KVER" >> "$GITHUB_OUTPUT"
+          echo "Kernel version: $KVER"
+
+      - name: Build modules
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules 2>&1 | tee modules.log
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_install INSTALL_MOD_PATH=./modules-out
+
+      - name: Package modules
+        run: |
+          tar czf linux-xiaomi-muyu-${{ steps.ver.outputs.kernel_version }}-modules.tar.gz -C modules-out lib/modules
+
+      - name: Setup mkbootimg
+        run: |
+          # 从 AOSP 取 mkbootimg
+          curl -sL https://github.com/anestisb/android.mkbootimg/archive/refs/heads/master.zip -o mkbootimg.zip
+          unzip -q mkbootimg.zip
+          chmod +x android.mkbootimg-master/mkbootimg.py
+          ls -la android.mkbootimg-master/
+
+      - name: Build dualboot boot.img
+        run: |
+          DTB=arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dtb
+          if [[ ! -f "$DTB" ]]; then
+            echo "::warning::muyu dtb 不存在，尝试查找 sm8635 相关 dtb"
+            DTB=$(ls arch/arm64/boot/dts/qcom/sm8635*.dtb 2>/dev/null | head -1)
+          fi
+          echo "Using DTB: $DTB"
+          python3 android.mkbootimg-master/mkbootimg.py \
+            --kernel arch/arm64/boot/Image \
+            --dtb "$DTB" \
+            --cmdline "root=PARTLABEL=linux rootwait console=ttyMSM0,115200n8 earlycon" \
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --kernel_offset 0x8000 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --output boot_muyu_dualboot.img
+          ls -lh boot_muyu_dualboot.img
+
+      - name: Build singleboot boot.img
+        if: inputs.singleboot || github.event_name == 'push'
+        run: |
+          DTB=arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dtb
+          if [[ ! -f "$DTB" ]]; then
+            DTB=$(ls arch/arm64/boot/dts/qcom/sm8635*.dtb 2>/dev/null | head -1)
+          fi
+          python3 android.mkbootimg-master/mkbootimg.py \
+            --kernel arch/arm64/boot/Image \
+            --dtb "$DTB" \
+            --cmdline "root=PARTLABEL=userdata rootwait console=ttyMSM0,115200n8 earlycon" \
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --kernel_offset 0x8000 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --output boot_muyu_singleboot.img
+          ls -lh boot_muyu_singleboot.img
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-build
+          path: |
+            boot_muyu_dualboot.img
+            boot_muyu_singleboot.img
+            linux-xiaomi-muyu-*-modules.tar.gz
+          retention-days: 14
+
+  release:
+    name: Publish Release
+    needs: [build-kernel]
+    runs-on: ubuntu-24.04-arm
+    if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && github.event_name == 'push')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: kernel-build
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag || github.run_number }}"
+          echo "Publishing release: $TAG"
+          gh release create "$TAG" \
+            --title "Linux $TAG for muyu" \
+            --notes "自动构建的 muyu（小米 Pad 7 Pro）内核 $TAG" \
+            boot_muyu_dualboot.img \
+            boot_muyu_singleboot.img \
+            linux-xiaomi-muyu-*.tar.gz

@@ -1,0 +1,551 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Copyright (c) 2024, map220v <map220v300@gmail.com>
+ *
+ * sm8635-xiaomi-muyu.dts — 小米 Pad 7 Pro（muyu）mainline 设备树骨架
+ *
+ * ⚠️ 这是从 sm8550-xiaomi-sheng.dts 机械改名而来的骨架，
+ *    所有设备特定节点（触控/音频/指纹/面板/传感器）的 GPIO 地址、I2C 地址、
+ *    中断引脚、电源域都是 sheng 的值，**必须对照 muyu 的 Android 内核 dts 重新核对**。
+ *    核对方法：从 muyu 的 MIUI 内核源码（android_kernel_xiaomi_sm8635）提取
+ *    arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts，逐节点替换。
+ */
+
+/dts-v1/;
+#include <dt-bindings/arm/qcom,ids.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+
+/* TODO: 确认 SM8635 对应的上游 dtsi 文件名（可能是 sm8650.dtsi，因 SM8635 与 SM8650 同代） */
+#include "sm8635.dtsi"
+/* TODO: 确认 muyu 的 PMIC 型号（sheng 是 pm8550 + pm8550b + pm8550ve + pm8550vs + pmk8550 + pm8010） */
+#include "pm8650.dtsi"
+#include "pm8650b.dtsi"
+#include "pmk8550.dtsi"
+
+#define PMK8550VE_SID 5
+
+/delete-node/ &rmtfs_mem;
+/delete-node/ &adspslpi_mem;
+/delete-node/ &xbl_dt_log_merged_mem;
+/delete-node/ &hwfence_shbuf;
+
+/delete-node/ &hyp_tags_reserved_mem;
+/delete-node/ &cdsp_secure_heap_mem;
+/delete-node/ &trust_ui_vm_mem;
+/delete-node/ &trust_ui_vm_dump;
+/delete-node/ &trust_ui_vm_qrtr;
+/delete-node/ &trust_ui_vm_vblk0_ring;
+/delete-node/ &trust_ui_vm_vblk1_ring;
+/delete-node/ &trust_ui_vm_swiotlb;
+/delete-node/ &oem_vm_vblk0_ring;
+/delete-node/ &oem_vm_swiotlb;
+/delete-node/ &oem_vm_mem;
+/delete-node/ &hyp_ext_tags_mem;
+/delete-node/ &hyp_ext_reserved_mem;
+
+/* TODO: 确认 muyu 的 I2C8 引脚是否与 sheng 相同 */
+/delete-node/ &qup_i2c8_data_clk;
+/* TODO: 确认 muyu 是否使用 Nanosic WN803x（sheng 用了） */
+/delete-node/ &qup_i2c9_data_clk;
+
+/* SM8635 可能没有 Modem DSP（Wi-Fi 版） */
+/delete-node/ &mpss_dsm_mem;
+/delete-node/ &mpss_mem;
+/delete-node/ &q6_mpss_dtb_mem;
+/delete-node/ &remoteproc_mpss;
+
+/ {
+	model = "Xiaomi Pad 7 Pro";
+	/* TODO: 确认 muyu 的 compatible 字符串（从 Android dts 提取） */
+	compatible = "xiaomi,muyu", "qcom,sm8635";
+	chassis-type = "tablet";
+	/* TODO: 确认 SM8635 的 msm-id（从 Android dts 提取） */
+	qcom,msm-id = <0 0x0>;
+	qcom,board-id = <0x10008 0>;
+
+	aliases {
+		serial0 = &uart7;
+		serial1 = &uart14;
+	};
+
+	chosen {
+		bootargs = "udmabuf.size_limit_mb=256";
+	};
+
+	/* TODO: muyu 侧置指纹（电源键集成），型号待确认（sheng 是 FPC1020/FPC1552） */
+	fingerprint_fpc {
+		compatible = "fpc,fpc1020";
+		interrupt-parent = <&tlmm>;
+		/* TODO: 确认 muyu 指纹的 GPIO 编号 */
+		interrupts = <40 0>;
+		fpc,gpio_rst = <&tlmm 41 GPIO_ACTIVE_HIGH>;
+		fpc,gpio_irq = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+		irq-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+		fp_vdd_vreg-supply = <&vreg_l9b_3p3>;
+		pinctrl-names = "fpc1020_reset_reset",
+				"fpc1020_reset_active",
+				"fpc1020_irq_active";
+		pinctrl-0 = <&fpc_reset_low>;
+		pinctrl-1 = <&fpc_reset_high>;
+		pinctrl-2 = <&fpc_irq_active>;
+	};
+
+	/* TODO: muyu 是 IPS LCD，背光电路与 OLED 不同（sheng 的 OLED 不需要这些 GPIO） */
+	bl_vddpos_5p8: bl-vddpos-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "bl_vddpos_5p8";
+		regulator-min-microvolt = <5800000>;
+		regulator-max-microvolt = <5800000>;
+		regulator-enable-ramp-delay = <233>;
+		gpio = <&tlmm 30 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	bl_vddneg_5p8: bl-vddneg-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "bl_vddneg_5p8";
+		regulator-min-microvolt = <5800000>;
+		regulator-max-microvolt = <5800000>;
+		regulator-enable-ramp-delay = <233>;
+		gpio = <&tlmm 31 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-0 = <&volume_up_n>, <&hall_sensor_default>;
+		pinctrl-names = "default";
+		key-volume-up {
+			label = "Volume Up";
+			linux,code = <KEY_VOLUMEUP>;
+			/* TODO: 确认 muyu 音量键 GPIO */
+			gpios = <&pm8650_gpios 6 GPIO_ACTIVE_LOW>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+		event-hall-sensor {
+			label = "Hall Effect Sensor";
+			/* TODO: 确认 muyu 霍尔传感器 GPIO */
+			gpios = <&tlmm 171 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+		event-tablet-mode {
+			label = "Tablet Mode Switch";
+			/* TODO: 确认 muyu 平板模式 GPIO */
+			gpios = <&tlmm 172 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_TABLET_MODE>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+	};
+
+	pmic-glink {
+		compatible = "xiaomi,sm8635-pmic-glink", "qcom,sm8650-pmic-glink", "qcom,pmic-glink";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		orientation-gpios = <&tlmm 11 GPIO_ACTIVE_HIGH>;
+		connector@0 {
+			compatible = "usb-c-connector";
+			reg = <0>;
+			power-role = "dual";
+			data-role = "dual";
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				port@0 {
+					reg = <0>;
+					pmic_glink_hs_in: endpoint {
+						remote-endpoint = <&usb_1_dwc3_hs>;
+					};
+				};
+				port@1 {
+					reg = <1>;
+					pmic_glink_ss_in: endpoint {
+						remote-endpoint = <&redriver_ss_out>;
+					};
+				};
+				port@2 {
+					reg = <2>;
+					pmic_glink_sbu: endpoint {
+						remote-endpoint = <&fsa4480_sbu_mux>;
+					};
+				};
+			};
+		};
+	};
+
+	reserved-memory {
+		xbl_ramdump_mem: xbl-ramdump-region@81200000 {
+			reg = <0 0x81200000 0 0x280000>;
+			no-map;
+		};
+		xbl_dt_log_mem: xbl-dt-log-region@81a00000 {
+			reg = <0 0x81a00000 0 0x40000>;
+			no-map;
+		};
+		aop_image_mem: aop-image-region@81c00000 {
+			reg = <0 0x81c00000 0 0x60000>;
+			no-map;
+		};
+		adspslpi_mem: adspslpi-region@9ea00000 {
+			reg = <0 0x9ea00000 0 0x4680000>;
+			no-map;
+		};
+		rmtfs_mem: rmtfs-region@ccd00000 {
+			compatible = "qcom,rmtfs-mem";
+			reg = <0x0 0xccd00000 0x0 0x280000>;
+			no-map;
+			qcom,client-id = <1>;
+			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
+		};
+		hwfence_shbuf: hwfence-shbuf-region@e6440000 {
+			reg = <0 0xe6440000 0 0x2dd000>;
+			no-map;
+		};
+		llcc_lpi_mem: llcc-lpi-region@ff800000 {
+			reg = <0 0xff800000 0 0x600000>;
+			no-map;
+		};
+		linux,cma {
+			compatible = "shared-dma-pool";
+			size = <0x0 0x30000000>;
+			reusable;
+			linux,cma-default;
+		};
+	};
+
+	/* TODO: muyu 是四扬声器杜比全景声，音频功放型号待确认（sheng 是 6 颗 cs35l43） */
+	sound {
+		compatible = "qcom,sm8650-sndcard", "qcom,sm8550-sndcard";
+		pinctrl-0 = <&i2s1_default>;
+		pinctrl-names = "default";
+		model = "Xiaomi-Pad7Pro";
+		audio-routing = "IN1_HPHL", "HPHL_OUT",
+				"IN2_HPHR", "HPHR_OUT",
+				"AMIC1", "MIC BIAS1",
+				"AMIC2", "MIC BIAS2",
+				"AMIC3", "MIC BIAS3",
+				"AMIC4", "MIC BIAS3",
+				"AMIC5", "MIC BIAS4",
+				"TX SWR_INPUT0", "ADC1_OUTPUT",
+				"TX SWR_INPUT1", "ADC2_OUTPUT",
+				"TX SWR_INPUT0", "ADC3_OUTPUT",
+				"TX SWR_INPUT1", "ADC4_OUTPUT";
+		secondary-i2s-dai-link {
+			link-name = "Secondary MI2S Playback";
+			cpu {
+				sound-dai = <&q6apmbedai SECONDARY_MI2S_RX>;
+			};
+			/* TODO: 确认 muyu 音频功放数量与型号（四扬声器可能是 4 颗 cs35l43 或其他） */
+			codec {
+				sound-dai = <&cs35l43_tll>, <&cs35l43_tlh>, <&cs35l43_trl>,
+						<&cs35l43_bll>, <&cs35l43_blh>, <&cs35l43_brl>;
+			};
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+		wcd-playback-dai-link {
+			link-name = "WCD Playback";
+			cpu {
+				sound-dai = <&q6apmbedai RX_CODEC_DMA_RX_0>;
+			};
+			codec {
+				sound-dai = <&wcd938x 0>, <&swr1 0>, <&lpass_rxmacro 0>;
+			};
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+		wcd-capture-dai-link {
+			link-name = "WCD Capture";
+			cpu {
+				sound-dai = <&q6apmbedai TX_CODEC_DMA_TX_3>;
+			};
+			codec {
+				sound-dai = <&wcd938x 1>, <&swr2 0>, <&lpass_txmacro 0>;
+			};
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+		displayport-dai-link {
+			link-name = "DisplayPort Playback";
+			cpu {
+				sound-dai = <&q6apmbedai DISPLAY_PORT_RX_0>;
+			};
+			codec {
+				sound-dai = <&mdss_dp0>;
+			};
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+	};
+
+	vph_pwr: vph-pwr-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vph_pwr";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/* TODO: 确认 muyu 音频编解码器型号（sheng 是 wcd9380） */
+	wcd938x: audio-codec {
+		compatible = "qcom,wcd9380-codec";
+		pinctrl-names = "default";
+		pinctrl-0 = <&wcd_default>;
+		qcom,micbias1-microvolt = <2750000>;
+		qcom,micbias2-microvolt = <2750000>;
+		qcom,micbias3-microvolt = <2750000>;
+		qcom,micbias4-microvolt = <2750000>;
+		qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
+		qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
+		qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
+		qcom,rx-device = <&wcd_rx>;
+		qcom,tx-device = <&wcd_tx>;
+		reset-gpios = <&tlmm 108 GPIO_ACTIVE_LOW>;
+		vdd-buck-supply = <&vreg_l15b_1p8>;
+		vdd-rxtx-supply = <&vreg_l15b_1p8>;
+		vdd-io-supply = <&vreg_l15b_1p8>;
+		vdd-mic-bias-supply = <&vreg_bob1>;
+		#sound-dai-cells = <1>;
+	};
+
+	/* TODO: 确认 muyu Wi-Fi/BT 芯片型号（sheng 是 WCN7850） */
+	wcn7850-pmu {
+		compatible = "qcom,wcn7850-pmu";
+		pinctrl-names = "default";
+		pinctrl-0 = <&wlan_en>, <&bt_default>, <&pmk8550_sleep_clk>;
+		wlan-enable-gpios = <&tlmm 80 GPIO_ACTIVE_HIGH>;
+		bt-enable-gpios = <&tlmm 81 GPIO_ACTIVE_HIGH>;
+		vdd-supply = <&vreg_s5g_0p8>;
+		vddio-supply = <&vreg_l15b_1p8>;
+		vddaon-supply = <&vreg_s2g_0p8>;
+		vdddig-supply = <&vreg_s4e_0p9>;
+		vddrfa1p2-supply = <&vreg_s4g_1p3>;
+		vddrfa1p8-supply = <&vreg_s6g_1p8>;
+		regulators {
+			vreg_pmu_rfa_cmn: ldo0 { regulator-name = "vreg_pmu_rfa_cmn"; };
+			vreg_pmu_aon_0p59: ldo1 { regulator-name = "vreg_pmu_aon_0p59"; };
+			vreg_pmu_wlcx_0p8: ldo2 { regulator-name = "vreg_pmu_wlcx_0p8"; };
+			vreg_pmu_wlmx_0p85: ldo3 { regulator-name = "vreg_pmu_wlmx_0p85"; };
+			vreg_pmu_btcmx_0p85: ldo4 { regulator-name = "vreg_pmu_btcmx_0p85"; };
+			vreg_pmu_rfa_0p8: ldo5 { regulator-name = "vreg_pmu_rfa_0p8"; };
+			vreg_pmu_rfa_1p2: ldo6 { regulator-name = "vreg_pmu_rfa_1p2"; };
+			vreg_pmu_rfa_1p8: ldo7 { regulator-name = "vreg_pmu_rfa_1p8"; };
+			vreg_pmu_pcie_0p9: ldo8 { regulator-name = "vreg_pmu_pcie_0p9"; };
+			vreg_pmu_pcie_1p8: ldo9 { regulator-name = "vreg_pmu_pcie_1p8"; };
+		};
+	};
+};
+
+&ipa {
+	qcom,gsi-loader = "self";
+	memory-region = <&ipa_fw_mem>;
+	firmware-name = "qcom/sm8635/muyu/ipa_fws.mbn";
+	status = "okay";
+};
+
+&gpu_zap_shader {
+	firmware-name = "qcom/sm8635/muyu/adreno_735_zap.mbn";
+};
+
+/* TODO: 确认 muyu 触控芯片型号、I2C 地址、中断引脚（sheng 是 Novatek NT36532E） */
+&i2c0 {
+	clock-frequency = <400000>;
+	status = "okay";
+	typec-retimer@28 {
+		compatible = "parade,ps5169";
+		reg = <0x28>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&ps5169_reset_default>;
+		reset-gpios = <&tlmm 7 GPIO_ACTIVE_LOW>;
+		orientation-switch;
+		retimer-switch;
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			port@0 {
+				reg = <0>;
+				redriver_ss_out: endpoint {
+					remote-endpoint = <&pmic_glink_ss_in>;
+				};
+			};
+			port@1 {
+				reg = <1>;
+				redriver_ss_in: endpoint {
+					data-lanes = <3 2 1 0>;
+					remote-endpoint = <&usb_dp_qmpphy_out>;
+				};
+			};
+		};
+	};
+};
+
+/* TODO: 确认 muyu 背光控制器（sheng 是 kinetic,ktz8866a） */
+&i2c1 {
+	status = "okay";
+	backlight: backlight@11 {
+		compatible = "kinetic,ktz8866a";
+		reg = <0x11>;
+		vin-supply = <&vph_pwr>;
+		enable-gpios = <&tlmm 128 GPIO_ACTIVE_HIGH>;
+		current-num-sinks = <5>;
+		kinetic,current-ramp-delay-ms = <256>;
+		kinetic,led-enable-ramp-delay-ms = <8>;
+		kinetic,enable-lcd-bias;
+	};
+};
+
+/* TODO: 确认 muyu 音频功放的 I2C 总线和地址（sheng 是 i2c5 + i2c8 上的 6 颗 cs35l43） */
+&i2c5 {
+	clock-frequency = <1000000>;
+	status = "okay";
+	cs35l43_trl: cs35l43@40 {
+		compatible = "cirrus,cs35l43";
+		reg = <0x40>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <98 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 90 GPIO_ACTIVE_HIGH>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "TRL";
+		cirrus,dsp-part-name = "trl-cs35l43";
+		cirrus,vpbr-thld = <8>;
+		cirrus,vpbr-max-att = <3>;
+		cirrus,vpbr-atk-vol = <5>;
+		cirrus,vpbr-atk-rate = <0>;
+		cirrus,vpbr-wait = <0>;
+		cirrus,vpbr-rel-rate = <0>;
+		cirrus,vpbr-enable = <1>;
+		cirrus,gpio2-src-sel = <4>;
+		cirrus,asp-sdout-hiz = <3>;
+		cirrus,bst-ipk-ma = <4000>;
+	};
+	cs35l43_tlh: cs35l43@41 {
+		compatible = "cirrus,cs35l43";
+		reg = <0x41>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <99 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 90 GPIO_ACTIVE_HIGH>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "TLH";
+		cirrus,dsp-part-name = "tlh-cs35l43";
+		cirrus,vpbr-thld = <8>;
+		cirrus,vpbr-max-att = <3>;
+		cirrus,vpbr-atk-vol = <5>;
+		cirrus,vpbr-atk-rate = <0>;
+		cirrus,vpbr-wait = <0>;
+		cirrus,vpbr-rel-rate = <0>;
+		cirrus,vpbr-enable = <1>;
+		cirrus,gpio2-src-sel = <4>;
+		cirrus,asp-sdout-hiz = <3>;
+		cirrus,bst-ipk-ma = <4000>;
+	};
+	cs35l43_tll: cs35l43@42 {
+		compatible = "cirrus,cs35l43";
+		reg = <0x42>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <119 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 90 GPIO_ACTIVE_HIGH>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "TLL";
+		cirrus,dsp-part-name = "tll-cs35l43";
+		cirrus,vpbr-thld = <8>;
+		cirrus,vpbr-max-att = <3>;
+		cirrus,vpbr-atk-vol = <5>;
+		cirrus,vpbr-atk-rate = <0>;
+		cirrus,vpbr-wait = <0>;
+		cirrus,vpbr-rel-rate = <0>;
+		cirrus,vpbr-enable = <1>;
+		cirrus,gpio2-src-sel = <4>;
+		cirrus,asp-sdout-hiz = <3>;
+		cirrus,bst-ipk-ma = <4000>;
+	};
+};
+
+&i2c8 {
+	clock-frequency = <1000000>;
+	status = "okay";
+	cs35l43_blh: cs35l43@40 {
+		compatible = "cirrus,cs35l43";
+		reg = <0x40>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <8 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 90 GPIO_ACTIVE_HIGH>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "BLH";
+		cirrus,dsp-part-name = "blh-cs35l43";
+		cirrus,vpbr-thld = <8>;
+		cirrus,vpbr-max-att = <3>;
+		cirrus,vpbr-atk-vol = <5>;
+		cirrus,vpbr-atk-rate = <0>;
+		cirrus,vpbr-wait = <0>;
+		cirrus,vpbr-rel-rate = <0>;
+		cirrus,vpbr-enable = <1>;
+		cirrus,gpio2-src-sel = <4>;
+		cirrus,asp-sdout-hiz = <3>;
+		cirrus,bst-ipk-ma = <4000>;
+	};
+	cs35l43_bll: cs35l43@41 {
+		compatible = "cirrus,cs35l43";
+		reg = <0x41>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <17 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 90 GPIO_ACTIVE_HIGH>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "BLL";
+		cirrus,dsp-part-name = "bll-cs35l43";
+		cirrus,vpbr-thld = <8>;
+		cirrus,vpbr-max-att = <3>;
+		cirrus,vpbr-atk-vol = <5>;
+		cirrus,vpbr-atk-rate = <0>;
+		cirrus,vpbr-wait = <0>;
+		cirrus,vpbr-rel-rate = <0>;
+		cirrus,vpbr-enable = <1>;
+		cirrus,gpio2-src-sel = <4>;
+		cirrus,asp-sdout-hiz = <3>;
+		cirrus,bst-ipk-ma = <4000>;
+	};
+	cs35l43_brl: cs35l43@42 {
+		compatible = "cirrus,cs35l43";
+		reg = <0x42>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <85 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 90 GPIO_ACTIVE_HIGH>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "BRL";
+		cirrus,dsp-part-name = "brl-cs35l43";
+		cirrus,vpbr-thld = <8>;
+		cirrus,vpbr-max-att = <3>;
+		cirrus,vpbr-atk-vol = <5>;
+		cirrus,vpbr-atk-rate = <0>;
+		cirrus,vpbr-wait = <0>;
+		cirrus,vpbr-rel-rate = <0>;
+		cirrus,vpbr-enable = <1>;
+		cirrus,gpio2-src-sel = <4>;
+		cirrus,asp-sdout-hiz = <3>;
+		cirrus,bst-ipk-ma = <4000>;
+	};
+};
+
+/* TODO: 确认 muyu 相机配置（sheng 有后置 + 深度 + 前置三颗摄像头） */
+&camss {
+	vdda-phy-supply = <&vreg_l1e_0p88>;
+	vdda-pll-supply = <&vreg_l3e_1p2>;
+	status = "okay";
+};
+
+&gpi_dma1 { status = "okay"; };
+&gpi_dma2 { status = "okay"; };
+&gpu { status = "okay"; };

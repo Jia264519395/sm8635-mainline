@@ -1,12 +1,6 @@
 name: Build Kernel & Release
 
 on:
-  push:
-    branches: [ main, muyu-* ]
-    paths:
-      - 'arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts'
-      - 'sm8635.config'
-      - '.github/workflows/kernel.yml'
   workflow_dispatch:
     inputs:
       tag:
@@ -30,10 +24,19 @@ jobs:
     outputs:
       kernel_version: ${{ steps.ver.outputs.kernel_version }}
     steps:
-      - name: Checkout
+      - name: Checkout muyu dts overlay
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          path: muyu-overlay
+
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost \
+                      "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          df -h / | tail -1
 
       - name: Install build dependencies
         run: |
@@ -41,96 +44,123 @@ jobs:
           sudo apt-get install -y -qq \
             build-essential bc flex bison libssl-dev libncurses-dev \
             gcc-aarch64-linux-gnu clang llvm \
-            python3 dwarves git curl zip
+            python3 dwarves git curl zip unzip
 
-      - name: Check for sm8635.config or fallback
+      - name: Clone sheng kernel source (base)
         run: |
-          if [[ ! -f sm8635.config ]]; then
-            echo "::warning::sm8635.config 不存在，使用 sheng 的 sm8550.config 作为基础"
-            # 从 sheng 仓库拉取 config 作为基础
-            curl -sL https://raw.githubusercontent.com/ianchb/sm8550-mainline/sheng-7.2.6/sm8550.config -o sm8635.config || true
-          fi
-          ls -la sm8635.config
+          git clone --depth 1 --branch sheng-7.2.6 \
+            https://github.com/ianchb/sm8550-mainline.git kernel-src
+          cd kernel-src
+          git log --oneline -1
+          echo "Kernel source ready: $(du -sh . | cut -f1)"
+
+      - name: Overlay muyu dts
+        run: |
+          # 把我们的 muyu dts 覆盖到内核源码里
+          cp muyu-overlay/arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts \
+            kernel-src/arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts
+          # 复制 sheng 的 config 作为基础
+          cp kernel-src/arch/arm64/configs/sm8550_defconfig 2>/dev/null || \
+             cp kernel-src/sm8550.config kernel-src/.config 2>/dev/null || true
+          ls -la kernel-src/.config kernel-src/arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dts
 
       - name: Configure kernel
+        working-directory: kernel-src
         run: |
-          cp sm8635.config .config
-          make ARCH=arm64 olddefconfig
-          # 确认 muyu dts 被选中
+          if [[ ! -f .config ]]; then
+            echo "::warning::没有 .config，使用 defconfig"
+            make ARCH=arm64 defconfig
+          fi
+          # 启用 QCOM 平台支持
           scripts/config --enable CONFIG_ARCH_QCOM
-          scripts/config --enable CONFIG_ARCH_MSM8998
-          scripts/config --set-str CONFIG_BUILD_SALT "muyu"
+          scripts/config --enable CONFIG_ARCH_QCOM
+          scripts/config --enable CONFIG_BUILD_ARM64_DT_OVERLAY
+          scripts/config --enable CONFIG_OF
           make ARCH=arm64 olddefconfig
+          echo "Config done. $(grep -c 'CONFIG_' .config) configs"
 
       - name: Build Image
+        working-directory: kernel-src
         run: |
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image dtbs 2>&1 | tee build.log
-          # 检查产物
-          ls -l arch/arm64/boot/Image
-          ls -l arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dtb || echo "::warning::muyu dtb 未生成"
+          echo "=== 检查产物 ==="
+          ls -lh arch/arm64/boot/Image
+          echo "=== 查找 sm8635/muyu 相关 dtb ==="
+          find arch/arm64/boot/dts/qcom -name '*muyu*' -o -name '*sm8635*' 2>/dev/null || echo "未找到 muyu dtb"
+          echo "=== 查找所有 sm8* 相关 dtb ==="
+          ls arch/arm64/boot/dts/qcom/sm8*.dtb 2>/dev/null | head -10
 
       - name: Extract kernel version
         id: ver
+        working-directory: kernel-src
         run: |
           KVER=$(make ARCH=arm64 -s kernelrelease 2>/dev/null || echo "unknown")
           echo "kernel_version=$KVER" >> "$GITHUB_OUTPUT"
           echo "Kernel version: $KVER"
 
       - name: Build modules
+        working-directory: kernel-src
         run: |
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules 2>&1 | tee modules.log
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules 2>&1 | tail -20
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_install INSTALL_MOD_PATH=./modules-out
 
       - name: Package modules
+        working-directory: kernel-src
         run: |
-          tar czf linux-xiaomi-muyu-${{ steps.ver.outputs.kernel_version }}-modules.tar.gz -C modules-out lib/modules
+          tar czf ../linux-xiaomi-muyu-${{ steps.ver.outputs.kernel_version }}-modules.tar.gz -C modules-out lib/modules
 
       - name: Setup mkbootimg
         run: |
-          # 从 AOSP 取 mkbootimg
           curl -sL https://github.com/anestisb/android.mkbootimg/archive/refs/heads/master.zip -o mkbootimg.zip
           unzip -q mkbootimg.zip
           chmod +x android.mkbootimg-master/mkbootimg.py
-          ls -la android.mkbootimg-master/
 
-      - name: Build dualboot boot.img
+      - name: Find DTB to use
+        id: dtb
+        working-directory: kernel-src
         run: |
-          DTB=arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dtb
-          if [[ ! -f "$DTB" ]]; then
-            echo "::warning::muyu dtb 不存在，尝试查找 sm8635 相关 dtb"
-            DTB=$(ls arch/arm64/boot/dts/qcom/sm8635*.dtb 2>/dev/null | head -1)
+          # 优先用 muyu dtb，找不到就用 sheng 的（至少能编译出 boot.img）
+          DTB=""
+          if [[ -f arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dtb ]]; then
+            DTB="arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dtb"
+          elif [[ -f arch/arm64/boot/dts/qcom/sm8550-xiaomi-sheng.dtb ]]; then
+            echo "::warning::muyu dtb 未生成，回退用 sheng dtb（仅作编译验证，不能刷到 muyu）"
+            DTB="arch/arm64/boot/dts/qcom/sm8550-xiaomi-sheng.dtb"
+          else
+            DTB=$(find arch/arm64/boot/dts/qcom -name 'sm8*.dtb' | head -1)
           fi
           echo "Using DTB: $DTB"
-          python3 android.mkbootimg-master/mkbootimg.py \
+          echo "dtb_path=$DTB" >> "$GITHUB_OUTPUT"
+
+      - name: Build dualboot boot.img
+        working-directory: kernel-src
+        run: |
+          python3 ../android.mkbootimg-master/mkbootimg.py \
             --kernel arch/arm64/boot/Image \
-            --dtb "$DTB" \
+            --dtb "${{ steps.dtb.outputs.dtb_path }}" \
             --cmdline "root=PARTLABEL=linux rootwait console=ttyMSM0,115200n8 earlycon" \
             --base 0x00000000 \
             --pagesize 4096 \
             --kernel_offset 0x8000 \
             --ramdisk_offset 0x01000000 \
             --tags_offset 0x00000100 \
-            --output boot_muyu_dualboot.img
-          ls -lh boot_muyu_dualboot.img
+            --output ../boot_muyu_dualboot.img
+          ls -lh ../boot_muyu_dualboot.img
 
       - name: Build singleboot boot.img
-        if: inputs.singleboot || github.event_name == 'push'
+        working-directory: kernel-src
         run: |
-          DTB=arch/arm64/boot/dts/qcom/sm8635-xiaomi-muyu.dtb
-          if [[ ! -f "$DTB" ]]; then
-            DTB=$(ls arch/arm64/boot/dts/qcom/sm8635*.dtb 2>/dev/null | head -1)
-          fi
-          python3 android.mkbootimg-master/mkbootimg.py \
+          python3 ../android.mkbootimg-master/mkbootimg.py \
             --kernel arch/arm64/boot/Image \
-            --dtb "$DTB" \
+            --dtb "${{ steps.dtb.outputs.dtb_path }}" \
             --cmdline "root=PARTLABEL=userdata rootwait console=ttyMSM0,115200n8 earlycon" \
             --base 0x00000000 \
             --pagesize 4096 \
             --kernel_offset 0x8000 \
             --ramdisk_offset 0x01000000 \
             --tags_offset 0x00000100 \
-            --output boot_muyu_singleboot.img
-          ls -lh boot_muyu_singleboot.img
+            --output ../boot_muyu_singleboot.img
+          ls -lh ../boot_muyu_singleboot.img
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -146,7 +176,7 @@ jobs:
     name: Publish Release
     needs: [build-kernel]
     runs-on: ubuntu-24.04-arm
-    if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && github.event_name == 'push')
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v7
